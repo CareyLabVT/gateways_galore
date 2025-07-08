@@ -1,0 +1,118 @@
+'CR1000 Series
+'Created by Short Cut (4.6)
+
+Const FRAME = 37 '% in ASCII
+Const TIMEST = "TS" 'message codes To prepend a message received/transmitted over serial
+Const NUM_ROWS = "NR"
+Const TABLE_METADATA = "TM"
+Const TABLE_ENTRY = "TE"
+Const ACK = "OK"
+
+'Declare Variables and Units
+Public BattV
+Public PTemp_C
+Public Temp_C
+Public tempASCII
+Public arrOut(5)
+
+Public TblFldNames(3) As String = {"BattV", "PTemp_C", "Temp_C"}
+Public TblFldUnits(3) As String = {"Volts", "Deg C", "Temp C"}
+Public TblName As String = "Table1"
+Public TblNumCols As Long
+
+Public NBytesRet
+
+'Serial communication variables
+Public SerialInDest As String * 128
+Public SerialInHead As String * 2
+Public timeSec As Long
+Public SS1990 As Long
+Public StopRec As Long
+Public StartRec As Long
+
+Units BattV=Volts
+Units PTemp_C=Deg C
+Units Temp_C=Deg C
+
+'Define Data Tables
+DataTable(Table1,True,-1)
+	DataInterval(0,10,Sec,10)
+	Sample(1,BattV,FP2)
+	Average(1,PTemp_C,FP2,False)
+	Average(1,Temp_C,FP2,False)
+EndTable
+
+'Main Program
+BeginProg
+  ' Table Metadata Information
+  TblNumCols = 5  
+
+  'InString = "abcdefghijklmnopqrstuvwxyz"
+  'open serial line here
+  SerialOpen(Com1,9600,16,0,10000)
+	'Main Scan
+	Scan(10,Sec,1,0)
+		'Default CR6 Datalogger Battery Voltage measurement 'BattV'
+		Battery(BattV)
+		'Default CR6 Datalogger Wiring Panel Temperature measurement 'PTemp_C'
+		PanelTemp(PTemp_C,60)
+		'Type T Thermocouple measurements 'Temp_C'
+		TCDiff(Temp_C,1,mv250,1,TypeT,PTemp_C,True,0,60,1,0)
+		
+    'read serial in from MCU
+    SerialInRecord(Com1, SerialInDest, FRAME, 0, FRAME, NBytesRet, 00)
+    SerialInHead = Mid(SerialInDest, 1, 2)
+    
+    'debugging output
+    'SerialOut(Com1, SerialInHead, 0, 1, 0)
+    Dim SerialOutString As String * 128
+    
+    If StrComp(SerialInHead, TIMEST) = 0 Then
+      'find number of records between timestamp and 
+      ' convert time string into SecsSince1990
+      SS1990 = SecsSince1990(Mid(SerialInDest, 3, 20), 1)
+      'SerialOut(Com1, SS1990, 0, 1, 0)
+      ' now loop through and find the first record that is older than this time
+      ' or until the loop reaches the beginning of the table
+      Dim I, SS1990T
+      StopRec = Table1.Record(1, 1) 'the record number to stop at
+      StartRec = 1
+      'loop through the table backwards and locare number of record difference
+      For I = 1 To StopRec
+        SS1990T = Table1.TimeStamp(1, I) 'get the timestamp of the record
+        If SS1990T < SS1990 Then
+          StartRec = Table1.Record(1, I)
+          ExitFor
+        EndIf
+      Next I
+      'now send the number of records back to the micrcontroller
+      Sprintf(SerialOutString, "%c%s%d,%d%c", FRAME, NUM_ROWS, StartRec, StopRec, FRAME)
+      SerialOut(Com1, SerialOutString, 0, 1, 0)
+      
+    ElseIf StrComp(SerialInHead, TABLE_METADATA) = 0 Then
+      'construct a string with the table name, num cols, and field names
+      Sprintf(SerialOutString, "%c%s%s;%d;%s", FRAME, TABLE_METADATA, TblName, TblNumCols, TblFldNames(1))
+      For I = 2 To ArrayLength(TblFldNames)
+        SerialOutString = SerialOutString + "," + TblFldNames(I)
+      Next I
+      SerialOutString = SerialOutString + ";" + TblFldUnits(1)
+      For I = 2 To ArrayLength(TblFldUnits)
+        SerialOutString = SerialOutString + "," + TblFldUnits(I)
+      Next I
+      SerialOutString = SerialOutString + "%"
+      'Sprintf(SerialOutString, "%c%s%s;%d;%s,%s,%s;%s,%s,%s", TblFldNames(1), TblFldNames(2), TblFldNames(3), TblFldUnits(1), TblFldUnits(2), TblFldUnits(3))
+      'send it over the line
+      SerialOut(Com1, SerialOutString, 0, 1, 0)
+    EndIf
+    'ElseIf StrComp(SerialInHead, "TS") = 0 Then
+      'debugging output
+      'SerialOut(Com1, SS1990, 0, 1, 0)
+    'EndIf
+    
+		'Call Data Tables and Store Data
+		CallTable Table1
+		
+    'read table data here
+    
+	NextScan
+EndProg

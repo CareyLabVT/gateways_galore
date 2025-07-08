@@ -1,0 +1,65 @@
+5/27/2025
+11:42:59
+Created by Short Cut (4.6)
+Short Cut Program:  test_data_table.DEF
+
+-Wiring for CR6 Series-
+
+  Type T TC
+    U1:  Sig+, Blue
+    U2:  Sig-, Red
+
+-Measurement Labels-
+
+  Default
+    BattV
+    PTemp_C
+
+  Type T TC
+    Temp_C
+
+----------------------------------------------------
+Table: Table1
+Interval: 60 MIN
+Fields:
+ BattV	Units: Volts
+ PTemp_C_Avg	Units: Deg C
+ Temp_C_Avg	Units: Deg C
+
+----------------------------------------------------
+Table: Table2
+Interval: 1440 MIN
+Fields:
+ BattV_Min	Units: Volts
+
+----------------------------------------------------
+Table: DataTableInfo
+Fields:
+ DataTableName(1)
+ DataTableName(2)
+ SkippedRecord(1)
+ SkippedRecord(2)
+ DataRecordSize(1,1)	Units: records
+ DataRecordSize(1,2)	Units: records
+ DataRecordSize(2,1)	Units: records
+ DataRecordSize(2,2)	Units: records
+ SecsPerRecord(1)
+ SecsPerRecord(2)
+ DataFillDays(1,1)	Units: days
+ DataFillDays(1,2)	Units: days
+ DataFillDays(2,1)	Units: days
+ DataFillDays(2,2)	Units: days
+ DataFilled(1,1)
+ DataFilled(1,2)
+ DataFilled(1,3)
+ DataFilled(1,4)
+ LastPublish(1)
+ LastPublish(2)
+
+----------------------------------------------------
+Table: Public
+Fields:
+ BattV	Units: Volts
+ PTemp_C	Units: Deg C
+ Temp_C	Units: Deg C
+
