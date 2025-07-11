@@ -2,11 +2,8 @@
 'Created by Short Cut (4.6)
 
 Const FRAME = 37 '% in ASCII
-Const TIMEST = "TS" 'message codes To prepend a message received/transmitted over serial
-Const NUM_ROWS = "NR"
 Const TABLE_METADATA = "TM"
 Const TABLE_ENTRY = "TE"
-Const ACK = "OK"
 
 'Declare Variables and Units
 Public BattV
@@ -66,32 +63,24 @@ BeginProg
     'debugging output
     'SerialOut(Com1, SerialInHead, 0, 1, 0)
     Dim SerialOutString As String * 128
-    
-    If StrComp(SerialInHead, TIMEST) = 0 Then
-      'find number of records between timestamp and 
-      ' convert time string into SecsSince1990
-      SS1990 = SecsSince1990(Mid(SerialInDest, 3, 20), 1)
-      'SerialOut(Com1, SS1990, 0, 1, 0)
-      ' now loop through and find the first record that is older than this time
-      ' or until the loop reaches the beginning of the table
-      Dim I, SS1990T
-      StopRec = Table1.Record(1, 1) 'the record number to stop at
-      StartRec = 1
-      'loop through the table backwards and locare number of record difference
-      For I = 1 To StopRec
-        SS1990T = Table1.TimeStamp(1, I) 'get the timestamp of the record
-        If SS1990T < SS1990 Then
-          StartRec = Table1.Record(1, I)
-          ExitFor
-        EndIf
-      Next I
-      'now send the number of records back to the micrcontroller
-      Sprintf(SerialOutString, "%c%s%d,%d%c", FRAME, NUM_ROWS, StartRec, StopRec, FRAME)
+    'SerialOut(Com1, "dogs", 0, 1, 0)  
+    If StrComp(SerialInHead, TABLE_ENTRY) = 0 Then
+      'construct a string containing the data at the table entry requested, unless the table entry
+      'requested is greater than the number of total entries... just return %TE% if that's the case
+      Dim ReqRecNum As Long
+      ReqRecNum = Mid(SerialInDest, 3, 1)
+      If ReqRecNum > Table1.TableSize(1, 1)
+        Sprintf(SerialOutString, "%c%s%c", FRAME, TABLE_ENTRY, FRAME)
+      Else
+        Dim TempS As String * 128
+        GetRecord(TempS, Table1, Table1.Record(1,1)-ReqRecNum)
+        Sprintf(SerialOutString, "%c%s%d,%s%c", FRAME, TABLE_ENTRY, ReqRecNum, TempS, FRAME)
+      EndIf
       SerialOut(Com1, SerialOutString, 0, 1, 0)
-      
     ElseIf StrComp(SerialInHead, TABLE_METADATA) = 0 Then
       'construct a string with the table name, num cols, and field names
       Sprintf(SerialOutString, "%c%s%s;%d;%s", FRAME, TABLE_METADATA, TblName, TblNumCols, TblFldNames(1))
+      Dim I
       For I = 2 To ArrayLength(TblFldNames)
         SerialOutString = SerialOutString + "," + TblFldNames(I)
       Next I
@@ -100,7 +89,6 @@ BeginProg
         SerialOutString = SerialOutString + "," + TblFldUnits(I)
       Next I
       SerialOutString = SerialOutString + "%"
-      'Sprintf(SerialOutString, "%c%s%s;%d;%s,%s,%s;%s,%s,%s", TblFldNames(1), TblFldNames(2), TblFldNames(3), TblFldUnits(1), TblFldUnits(2), TblFldUnits(3))
       'send it over the line
       SerialOut(Com1, SerialOutString, 0, 1, 0)
     EndIf

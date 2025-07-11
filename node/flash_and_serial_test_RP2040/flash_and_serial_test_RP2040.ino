@@ -1,10 +1,9 @@
 /* message formats
-TIMESTAMP (sent by MCU):                  %TS[MM/DD/YYYY hh:mm:dd]%
-NUM_ROWS (sent by DL):                    %NR[START_ROW],[STOP_ROW]%
-TABLE_ENTRY (sent by DL):                 %TE[REC_NUM],[TIMESTAMP],[DATA],[DATA],...%
+TABLE_ENTRY (req/ack by MCU, resp by DL): %TE[REC_NUM]%                                 (from MCU)
+                                          %TE[REC_NUM],[TIMESTAMP],[DATA],[DATA],...%   (from DL)
+                                          %TE%                                          (from DL - done)
 TABLE_METADATA (req by MCU, resp by DL):  %TM%                                                                                                    (from MCU)
                                           %TM[TABLE_NAME];[NUM_COLS];[FIELD1],[FIELD2],[FIELD3],[FIELD4]...;[FIELD1_UNITS],[FIELD2_UNITS],...%    (from DL)
-ACK (sent by MCU):                        %ACK[START_ROW],[STOP_ROW]%
 */
 
 /* JSON format
@@ -50,7 +49,10 @@ ACK (sent by MCU):                        %ACK[START_ROW],[STOP_ROW]%
 
 /* enums and structs */
 typedef struct Metadata {
-  String tableName;                // local name of the table
+  String tableName;               // local name of the table
+  String csvFilename;             // name of the CSV file (which may be different than the table name
+                                  //                       due to duplicate-named tables on the DL)
+  int dupCount;                   // a counter for duplicate table names for naming the csv file
   int numCols;                    // number of columns the table holds
   char* fieldNames;               // names of each field, as an array of strings
   char* fieldUnits;               // units of each field, as an array of strings
@@ -58,6 +60,69 @@ typedef struct Metadata {
 } Metadata;
 
 /* functions */
+
+int readMetadataJSON(Metadata* md) {
+  md->tableName = "Table1";
+  md->numCols = 5;
+  md->numRows = 0;
+  md->dupCount = 0;
+  md->csvFilename = "Table1.csv";
+
+  md->fieldNames = (char*)malloc(md->numCols * CR_FIELD_NAME_SIZE);
+  snprintf(md->fieldNames, CR_FIELD_NAME_SIZE, "%s", "RecNum");
+  snprintf(md->fieldNames+CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "TimeStamp");
+  snprintf(md->fieldNames+2*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "BattV");
+  snprintf(md->fieldNames+3*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "PTemp_C");
+  snprintf(md->fieldNames+4*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Temp_C");
+
+  md->fieldUnits = (char*)malloc(md->numCols * CR_FIELD_NAME_SIZE);
+  snprintf(md->fieldUnits, CR_FIELD_NAME_SIZE, "%s", "None");
+  snprintf(md->fieldUnits+CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "None");
+  snprintf(md->fieldUnits+2*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Volts");
+  snprintf(md->fieldUnits+3*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Deg C");
+  snprintf(md->fieldUnits+4*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Temp C");
+  return 1;
+}
+
+int compareMetadata(Metadata* md1, Metadata* md2) {
+  // compare received metadata to the FLASH metadata
+  // is the table name the same?
+  if (md1->tableName != md2->tableName) 
+  {
+    Serial.println("Received name " + String(md1->tableName) + " is not the same as FLASH-stored" + String(md2->tableName));
+    return 0;
+  }
+
+  // is the number of columns the same?
+  if (md1->numCols != md2->numCols) {
+    Serial.println("Received number of columns " + String(md1->numCols) + " is not the same as FLASH-stored " + String(md2->numCols));
+    return 0;
+  }
+
+  // are the field names the same? loop through to find out
+  for (int i=0; i < md1->numCols; i++) {
+    char* recvPtr = md1->fieldNames + i*CR_FIELD_NAME_SIZE;
+    char* flshPtr = md2->fieldNames + i*CR_FIELD_NAME_SIZE;
+    if (strcmp(recvPtr, flshPtr) != 0) {
+      Serial.println("Received field name " + String(i) + " is " + String(recvPtr) + " when " + String(flshPtr) + " is expected.");
+      return 0;
+    }
+  }
+
+  // are the field units the same?
+  for (int i=0; i < md1->numCols; i++) {
+    char* recvPtr = md1->fieldUnits + i*CR_FIELD_NAME_SIZE;
+    char* flshPtr = md2->fieldUnits + i*CR_FIELD_NAME_SIZE;
+    if (strcmp(recvPtr, flshPtr) != 0) {
+      Serial.println("Received field unit " + String(i) + " is " + String(recvPtr) + " when " + String(flshPtr) + " is expected.");
+      return 0;
+    }
+  }
+  return 1;
+}
+
+/* input processing */
+
 // returns the type of message received by the datalogger, 
 int validateMsg(char* buf) {
   // make sure the message is fenced by '%' characters
@@ -79,24 +144,12 @@ int validateMsg(char* buf) {
   return INVALID_MSG;
 }
 
-// write table metadata to FLASH
-int writeMetadataToFLASH() {
-  return 0;
-}
-
-int readMetadataFromFLASH() {
-  return 0;
-}
-
 // parse table metadata and compare with the FLASH stored data
 // returns 1 if the FLASH-metadata is the same as the received data
 //         0 if the FLASH-metadata does not match
-//         -1 upon error  
-int processTableMetadata(char* buf, Metadata mem) {
-  String name;
-  int cols;
-  char* fields;
-  char* units;
+//         -1 upon error
+int processTableMetadataMsg(char* buf, Metadata mem) {
+  Metadata* recvMd = new Metadata;
 
   char* rest = buf;
   char* token;
@@ -104,22 +157,22 @@ int processTableMetadata(char* buf, Metadata mem) {
   Serial.println(buf);
 
   // get the name of the table
-  name = String(strtok_r(&(buf[3]), ";", &rest));
+  recvMd->tableName = String(strtok_r(&(buf[3]), ";", &rest));
 
   // get the number of columns
   char* colsStr = strtok_r(rest, ";", &rest);
-  cols = (int)strtol(colsStr, &colsStr, 10);
+  recvMd->numCols = (int)strtol(colsStr, &colsStr, 10);
 
   // malloc a flat array for each field name
-  fields = (char*)malloc(cols*CR_FIELD_NAME_SIZE*sizeof(char*));
-  if (fields == NULL){
+  recvMd->fieldNames = (char*)malloc(recvMd->numCols*CR_FIELD_NAME_SIZE*sizeof(char*));
+  if (recvMd->fieldNames == NULL){
     Serial.println("fields malloc error");
     return -1;
   }
 
   // malloc a flat array for each field name
-  units = (char*)malloc(cols*CR_FIELD_NAME_SIZE*sizeof(char*));
-  if (units == NULL){
+  recvMd->fieldUnits = (char*)malloc(recvMd->numCols*CR_FIELD_NAME_SIZE*sizeof(char*));
+  if (recvMd->fieldUnits == NULL){
     Serial.println("units malloc error");
     return -1;
   }
@@ -128,10 +181,10 @@ int processTableMetadata(char* buf, Metadata mem) {
   char* fieldsStr = strtok_r(rest, ";", &rest);
   char* field;
   char* fieldsPtr = fieldsStr;
-  snprintf(fields, CR_FIELD_NAME_SIZE, "%s", "RecNum");
-  snprintf((fields+CR_FIELD_NAME_SIZE), CR_FIELD_NAME_SIZE, "%s", "TimeStamp");
-  for (int i = 2; (i < cols) && (field = strtok_r(fieldsPtr, ",", &fieldsPtr)); i++) {
-    char* curPtr = fields + i*CR_FIELD_NAME_SIZE;
+  snprintf(recvMd->fieldNames, CR_FIELD_NAME_SIZE, "%s", "RecNum");
+  snprintf((recvMd->fieldNames+CR_FIELD_NAME_SIZE), CR_FIELD_NAME_SIZE, "%s", "TimeStamp");
+  for (int i = 2; (i < recvMd->numCols) && (field = strtok_r(fieldsPtr, ",", &fieldsPtr)); i++) {
+    char* curPtr = recvMd->fieldNames + i*CR_FIELD_NAME_SIZE;
     snprintf(curPtr, CR_FIELD_NAME_SIZE, "%s", field);
   }
 
@@ -139,61 +192,70 @@ int processTableMetadata(char* buf, Metadata mem) {
   char* unitsStr = strtok_r(rest, "%", &rest);
   char* unit;
   char* unitsPtr = unitsStr;
-  snprintf(units, CR_FIELD_NAME_SIZE, "%s", "None");
-  snprintf((units+CR_FIELD_NAME_SIZE), CR_FIELD_NAME_SIZE, "%s", "None");
-  for (int i = 2; (i < cols) && (unit = strtok_r(unitsPtr, ",", &unitsPtr)); i++) {
-    char* curPtr = units + i*CR_FIELD_NAME_SIZE;
+  snprintf(recvMd->fieldUnits, CR_FIELD_NAME_SIZE, "%s", "None");
+  snprintf((recvMd->fieldUnits+CR_FIELD_NAME_SIZE), CR_FIELD_NAME_SIZE, "%s", "None");
+  for (int i = 2; (i < recvMd->numCols) && (unit = strtok_r(unitsPtr, ",", &unitsPtr)); i++) {
+    char* curPtr = recvMd->fieldUnits + i*CR_FIELD_NAME_SIZE;
     snprintf(curPtr, CR_FIELD_NAME_SIZE, "%s", unit);
   }
 
-  // compare received metadata to the FLASH metadata
-  // is the table name the same?
-  if (name != mem.tableName) 
-  {
-    Serial.println("Received name " + String(name) + " is not the same as FLASH-stored" + String(mem.tableName));
-    return 0;
-  }
+  // compare the two metadata structs
+  int compareResult = compareMetadata(&mem, recvMd);
 
-  // is the number of columns the same?
-  if (cols != mem.numCols) {
-    Serial.println("Received number of columns " + String(cols) + " is not the same as FLASH-stored " + String(mem.numCols));
-    return 0;
+  // if the result of the comparison is 0 (they are different), 
+  // then we must update the metadata and create a new table
+  if (compareResult == 0) {
+    // create new metadata file... and do what with the old one?
+    // things to consider: do we need to use the MD at all for LoRa transfer? 
+    //                    - compareResult needs to have more returns for different cases, or it needs to be brought out to this function again
+    //md->dupCount++; 
+    mem.csvFilename = String(mem.tableName) + String(mem.dupCount) + ".csv"; 
+    //snprintf(mem->csvFilename, (CR_TABLE_NAME_SIZE + 9), "%s%d.csv", mem->tableName, mem->dupCount);
   }
-
-  // are the field names the same? loop through to find out
-  for (int i=0; i < cols; i++) {
-    char* recvPtr = fields + i*CR_FIELD_NAME_SIZE;
-    char* flshPtr = mem.fieldNames + i*CR_FIELD_NAME_SIZE;
-    if (strcmp(recvPtr, flshPtr) != 0) {
-      Serial.println("Received field name " + String(i) + " is " + String(recvPtr) + " when " + String(flshPtr) + " is expected.");
-      return 0;
-    }
-  }
-  // are the field units the same?
-  for (int i=0; i < cols; i++) {
-    char* recvPtr = units + i*CR_FIELD_NAME_SIZE;
-    char* flshPtr = mem.fieldUnits + i*CR_FIELD_NAME_SIZE;
-    if (strcmp(recvPtr, flshPtr) != 0) {
-      Serial.println("Received field unit " + String(i) + " is " + String(recvPtr) + " when " + String(flshPtr) + " is expected.");
-      return 0;
-    }
+  else {
+    mem.csvFilename = String(mem.tableName) + ".csv"; 
+    //snprintf(mem->csvFilename, (CR_TABLE_NAME_SIZE + 4), "%s.csv", mem->tableName);
   }
 
   // free up the array resources
-  free(fields);
-  free(units);
-  return 1;
+  free(recvMd->fieldNames);
+  free(recvMd->fieldUnits);
+  delete recvMd;
+  return compareResult;
+}
 
-  // for debugging: print those mfers!
-  // for (int i = 0; i < cols; i++) {
-  //   char* curPtr = fields + i*CR_FIELD_NAME_SIZE;
-  //   Serial.println(curPtr);
-  // }
+// handle a table entry message
+// return 0 if the record number is not what is expected, 
+// 1 if it is expected and has been successfully processed 
+// and stored into memory
+// or -1 if an error occured during processing
+int processTableEntryMsg(char* buf, Metadata md) {
+  // %TE[REC_NUM],[TIMESTAMP],[DATA],[DATA],...%   (from DL)
+  char* rest = buf;
+  char* token;
 
-  // for (int i = 0; i < cols; i++) {
-  //   char* curPtr = units + i*CR_FIELD_NAME_SIZE;
-  //   Serial.println(curPtr);
-  // }
+  // get the record number
+  char* recNumStr = strtok_r(&(buf[3]), ",", &rest);
+  int recNum = (int)strtol(recNumStr, &recNumStr, 10);
+
+  // only process the data if the record number is correct
+  if (recNum == md.numRows+1) {
+    // write to the CSV file referenced in the metadata struct
+    
+    // open CSV file from md
+
+    // write a new line to it
+
+    // close that dirty bastard
+    Serial.println("Wrote " + String(buf) + " to " + String(md.csvFilename));
+
+    return 1;
+  } 
+  else {
+    Serial.println(String(md.numRows+1) + " was expected, but received " + String(recNum));
+  }
+
+  return 0;
 }
 
 /* variables */
@@ -209,22 +271,18 @@ int recvMsgType;                // integer representing type of message received
 
 // FLASH-stored data
 Metadata* md;
-// char* tableName;                // local name of the table 
-// int numCols;                    // number of columns the table holds
-// char** fieldNames;              // names of each field, as an array of strings
-// char** fieldUnits;              // units of each field, as an array of strings
-// int numRows;                    // number of rows in the table
 
-bool tableMDValidated;          // boolean to track if table metadata has been processed yet
+// boolean to track if table metadata has been processed yet
+bool tableMDValidated;
+
+// boolean to track if the datalogger is done sending table entries
+bool entriesDone;
 
 /* main program */
 void setup() {
   // the table metadata received by the datalogger has not been validated yet
   tableMDValidated = false;
-  // read table metadata from FLASH and store it in the program
-  // numCols = 5;
-  // fieldNames = Flash.getTableName;
-  // tableName = Flash.getTableName;
+  entriesDone = false;
 
   // establish serial communication
   Serial1.setFIFOSize(4096);
@@ -292,49 +350,23 @@ void setup() {
   // Serial.println(F("Opened file " METADATA_FNAME " for reading..."));
 
 
-  // setup Metadata struct
+  // setup Metadata struct and read the JSON into the struct
   md = new Metadata;
-  //metadata = (Metadata)malloc(sizeof(Metadata));
-  md->tableName = "Table1";
-  md->numCols = 5;
-  md->numRows = 0;
-
-  md->fieldNames = (char*)malloc(md->numCols * CR_FIELD_NAME_SIZE);
-  snprintf(md->fieldNames, CR_FIELD_NAME_SIZE, "%s", "RecNum");
-  snprintf(md->fieldNames+CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "TimeStamp");
-  snprintf(md->fieldNames+2*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "BattV");
-  snprintf(md->fieldNames+3*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "PTemp_C");
-  snprintf(md->fieldNames+4*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Temp_C");
-
-  md->fieldUnits = (char*)malloc(md->numCols * CR_FIELD_NAME_SIZE);
-  snprintf(md->fieldUnits, CR_FIELD_NAME_SIZE, "%s", "None");
-  snprintf(md->fieldUnits+CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "None");
-  snprintf(md->fieldUnits+2*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Volts");
-  snprintf(md->fieldUnits+3*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Deg C");
-  snprintf(md->fieldUnits+4*CR_FIELD_NAME_SIZE, CR_FIELD_NAME_SIZE, "%s", "Temp C");
-
-  // parse out JSON metadata and store it in program memory
-  // tableName = readTableNameFLASH(metadataFile);
-  // numCols = readNumColsFLASH(metadataFile);
-  // fieldNames = readFieldNamesFLASH(metadataFile);
-  // fieldUnits = readFieldUnitsFLASH(metadataFile);
-  // numRows = readNumRowsFLASH(metadataFile);
+  readMetadataJSON(md);
 
   // open CSV file for writing
   
+  // 
 }
 
 void loop() {
-  // reset the serial write buffer
-  memset(writeBuf, 0, sizeof(writeBuf)); // reset the buffer
-  recvMsgType = -1;
-  // read bytes from serial buffer
-  bytesRead = Serial1.readBytes(readBuf, BUFFER_SIZE);  
-
-  // send a request for the table metadata to the DL until a response
-  // has been returned
-  if (!tableMDValidated) {
-    Serial.println("not validated");
+  // loop 1: validate metadata
+  while (!tableMDValidated) {
+    // reset the serial write buffer
+    memset(writeBuf, 0, sizeof(writeBuf)); // reset the buffer
+    memset(readBuf, 0, sizeof(readBuf));
+    recvMsgType = -1;
+    
     // serial-write request for table metadata to datalogger
     snprintf(writeBuf, 100, "%%%s%%", TABLE_METADATA);
     Serial1.write(writeBuf);
@@ -348,30 +380,41 @@ void loop() {
       Serial.println("table metadata msg");
 
       // once metadata has been handled, set tableMDValidated to true
-      int res = processTableMetadata(readBuf, *md);
+      int res = processTableMetadataMsg(readBuf, *md);
       if (res != -1) {
         Serial.println(String(res));
+        // send table entry request
         tableMDValidated = true;
       }
     }
-    else {
-      Serial.println("not table metadata msg");
-    }
   }
-  else {
+  while (!entriesDone) {
+    memset(writeBuf, 0, sizeof(writeBuf)); // reset the buffer
+    memset(readBuf, 0, sizeof(readBuf));
+    recvMsgType = -1;
+    
+    // send a request for the table entry at numRows + 1
+    snprintf(writeBuf, 100, "%%%s%d%%", TABLE_ENTRY, md->numRows);
+    Serial1.write(writeBuf);
+    Serial.println(writeBuf);
+
+    // read bytes from serial buffer
+    bytesRead = Serial1.readBytes(readBuf, BUFFER_SIZE);
+
+    Serial.println(readBuf);
     recvMsgType = validateMsg(readBuf);
 
-    if (recvMsgType != INVALID_MSG) {
-      if (recvMsgType == TABLE_ENTRY_N) {
-        // each entry should be equal to numRows+1
-        // upon reception, the message should be parsed as a CSV row and the first piece of info extracted
-        // should be the row number. if that is equal to the numRows+1, then accept it as a valid entry, 
-        // increment numRows and save in FLASH and send an ACK for the newly increm'd numRows.  
+    if (recvMsgType == TABLE_ENTRY_N) {
+      Serial.println("table entry");
+      if (readBuf[3] != '%') {
+        // parse out the table entry, this will increment the recNum of md if correctly parsed
+        int entryRes = processTableEntryMsg(readBuf, *md);
       }
-      else if (recvMsgType == TABLE_METADATA_N) {
-        // handle case where table metadata changes while MCU is awake
+      else {
+        entriesDone = true;
       }
     }
+    
   }
 
   // send timestamp to DL
