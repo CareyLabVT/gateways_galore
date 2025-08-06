@@ -1,0 +1,14 @@
+{
+    "tableName":"table",
+    "csvFilename":"table.csv",
+    "numCols":5,
+    "fieldNames": ["RecNum", "TimeStamp", "BattV", "PTemp_C", "Temp_C"],
+    "fieldUnits": ["None", "None", "Volts", "Deg C", "Temp C"],
+    "rowNum":200
+}
+
+
+
+
+
+

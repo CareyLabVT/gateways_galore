@@ -43,10 +43,9 @@ EndTable
 BeginProg
   ' Table Metadata Information
   TblNumCols = 5  
-
-  'InString = "abcdefghijklmnopqrstuvwxyz"
-  'open serial line here
   SerialOpen(Com1,9600,16,0,10000)
+  'InString = "abcdefghijklmnopqrstuvwxyz"
+  
 	'Main Scan
 	Scan(10,Sec,1,0)
 		'Default CR6 Datalogger Battery Voltage measurement 'BattV'
@@ -56,7 +55,10 @@ BeginProg
 		'Type T Thermocouple measurements 'Temp_C'
 		TCDiff(Temp_C,1,mv250,1,TypeT,PTemp_C,True,0,60,1,0)
 		
-    'read serial in from MCU
+		'Call Data Tables and Store Data
+		CallTable Table1
+		
+    'read table data here
     SerialInRecord(Com1, SerialInDest, FRAME, 0, FRAME, NBytesRet, 00)
     SerialInHead = Mid(SerialInDest, 1, 2)
     
@@ -92,15 +94,5 @@ BeginProg
       'send it over the line
       SerialOut(Com1, SerialOutString, 0, 1, 0)
     EndIf
-    'ElseIf StrComp(SerialInHead, "TS") = 0 Then
-      'debugging output
-      'SerialOut(Com1, SS1990, 0, 1, 0)
-    'EndIf
-    
-		'Call Data Tables and Store Data
-		CallTable Table1
-		
-    'read table data here
-    
 	NextScan
 EndProg
