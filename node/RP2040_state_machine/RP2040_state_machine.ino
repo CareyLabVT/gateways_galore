@@ -61,7 +61,6 @@ static size_t  CSV_LEN = 0;
 enum Phase : uint8_t { PH_INIT, PH_SEND_START, PH_SEND_FRAGS, PH_SEND_END, PH_WAIT_RESULT, PH_DONE };
 static Phase    phase = PH_INIT;
 static uint16_t sessId = 0;
-static uint16_t nextSeq = 0;        // next fragment index to TRANSMIT
 static uint16_t totalFrags = 0;
 static int32_t  lastAckedSeq = -1;  // last fragment index ACKed (-1 before any ACK)
 
@@ -295,6 +294,124 @@ static int16_t lwActivate() {
   return st;
 }
 
+static bool sendStart() {
+  const size_t needHdr = 3;
+  logHeadroom("START", needHdr);
+  if (!ensureHeaderRoom(needHdr)) {
+    return false;
+  }
+
+  uint8_t up[3];
+  up[0] = MSG_START;
+  put16le(&up[1], sessId);
+
+  uint8_t dn[16]; 
+  size_t dnLen = sizeof(dn); 
+  uint8_t dnPort = 0;
+  (void)txrx(PORT_CTRL_UP, up, sizeof(up), dn, dnLen, dnPort);
+  processDownlink(dnPort, dn, dnLen);
+  return true;
+}
+
+// FRAG: send next un-ACKed fragment; 
+// returns  1 = all fragments already sent (nothing to do)
+//          0 = sent a fragment (ok)
+//         -1 = didn't send (no room); we ticked and processed downlink
+static int8_t sendFrag() {
+  const size_t hdr = 6;
+  uint8_t maxp = node.getMaxPayloadLen();
+  logHeadroom("FRAG", hdr);
+
+  if (maxp < hdr) {
+    if (!ensureHeaderRoom(hdr)) {
+      return -1;
+    }
+    maxp = node.getMaxPayloadLen();
+  }
+
+  // strict stop-and-wait: next needed fragment
+  uint16_t seq = (uint16_t)(lastAckedSeq + 1);
+  size_t off   = (size_t)seq * CHUNK_SIZE;
+
+  if (off >= CSV_LEN) {
+    return 1;  // nothing left
+  }
+
+  uint8_t want = (uint8_t)min((size_t)CHUNK_SIZE, CSV_LEN - off);
+  uint8_t room = (maxp > hdr) ? (uint8_t)(maxp - hdr) : 0;
+
+  if (room == 0) {
+    // open RX to drain MAC / receive ACKs
+    uint8_t dn[64]; 
+    size_t dnLen = sizeof(dn); 
+    uint8_t dnPort = 0;
+    (void)txrx(/*port*/0, /*payload*/nullptr, /*len*/0, dn, dnLen, dnPort);
+    processDownlink(dnPort, dn, dnLen);
+    return -1;
+  }
+  // otherwise there is room
+  uint8_t len = (want <= room) ? want : room;
+
+  uint8_t up[6 + CHUNK_SIZE];
+  up[0] = MSG_FRAG;
+  put16le(&up[1], sessId);
+  put16le(&up[3], seq);
+  up[5] = len;
+  memcpy(&up[6], &CSV_BUF[off], len);
+
+  uint8_t dn[16]; 
+  size_t dnLen = sizeof(dn); 
+  uint8_t dnPort = 0;
+  (void)txrx(PORT_DATA_UP, up, (size_t)(6 + len), dn, dnLen, dnPort);
+  processDownlink(dnPort, dn, dnLen);
+  return 0;
+}
+
+
+// END: send [type=END][sessId]; if RESULT arrives in same RX it will set PH_DONE
+static void sendEnd() {
+  const size_t needHdr = 3;
+  logHeadroom("END", needHdr);
+  if (!ensureHeaderRoom(needHdr)) {
+    return;
+  }
+
+  uint8_t up[3];
+  up[0] = MSG_END;
+  put16le(&up[1], sessId);
+
+  uint8_t dn[16]; 
+  size_t dnLen = sizeof(dn); 
+  uint8_t dnPort = 0;
+  int16_t got = txrx(PORT_CTRL_UP, up, sizeof(up), dn, dnLen, dnPort);
+  processDownlink(dnPort, dn, dnLen);
+
+  if (got >= 0 && phase != PH_DONE) {
+    phase = PH_WAIT_RESULT;
+    resultTickCount = 0;
+    resultStartMs = millis();
+  }
+  return;
+}
+
+// WAIT_RESULT: tick to open RX; handle timeout → retry END
+static void tickWaitResult() {
+  uint8_t dn[64]; 
+  size_t dnLen = sizeof(dn); 
+  uint8_t dnPort = 0;
+  (void)txrx(/*port*/0, /*payload*/nullptr, /*len*/0, dn, dnLen, dnPort);
+  processDownlink(dnPort, dn, dnLen);
+
+  if (phase == PH_DONE) {
+    return;
+  }
+
+  if (++resultTickCount >= RESULT_MAX_TICKS || (millis() - resultStartMs) > RESULT_WAIT_MS) {
+    Serial.println(F("RESULT timeout — retrying END."));
+    phase = PH_SEND_END;
+  }
+}
+
 // ======== setup & loop ========
 void setup() {
   Serial.begin(115200);
@@ -320,162 +437,34 @@ void loop() {
   // --- initialize once per file ---
   Serial.println(phaseText(phase));
 
-  if (phase == PH_INIT) {
-    buildCSV(CSV_ROWS);
-    sessId = (uint16_t)radio.random(0xFFFF);
-    totalFrags = (CSV_LEN + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    nextSeq = 0;
-    lastAckedSeq = -1;
-
-    Serial.print(F("CSV bytes=")); Serial.println(CSV_LEN);
-    phase = PH_SEND_START;
-    return;
-  }
-
-  // Prepare THIS cycle’s uplink
-  uint8_t up[1 + 2 + 6 + CHUNK_SIZE]; // big enough for any
-  size_t  upLen = 0;
-
-  if (phase == PH_SEND_START) {
-    // Minimal START: [type][sess] → 3 bytes (always fits once header room >=3)
-    const size_t needHdr = 3;
-    logHeadroom("START", needHdr);
-    if (!ensureHeaderRoom(needHdr)) { 
-      delay(SEND_GAP_MS); 
-      return; 
-    }
-    up[0] = MSG_START;
-    put16le(&up[1], sessId);
-    upLen = 3;
-  }
-  else if (phase == PH_SEND_FRAGS) {
-    const size_t hdr = 6;
-    uint8_t maxp = node.getMaxPayloadLen();
-    logHeadroom("FRAG", hdr);
-
-    // if the maximum payload length is less than the size of the header,
-    // then perform ADR adjustments until the payload length can fit
-    if (maxp < hdr) {
-      if (!ensureHeaderRoom(hdr)) { 
-        delay(SEND_GAP_MS); 
-        return; 
+  switch (phase) {
+    case PH_INIT:
+      buildCSV(CSV_ROWS);
+      sessId = (uint16_t)radio.random(0xFFFF);
+      lastAckedSeq = -1;
+      Serial.print(F("CSV bytes=")); Serial.println(CSV_LEN);
+      phase = PH_SEND_START;
+      break;
+    case PH_SEND_START:
+      if (sendStart()) {
+        phase = PH_SEND_FRAGS;
       }
-      maxp = node.getMaxPayloadLen();
-    }
-
-    // strict stop-and-wait: always send the next unACKed sequence
-    uint16_t seq = (uint16_t)(lastAckedSeq + 1);
-    size_t off   = (size_t)seq * CHUNK_SIZE;
-
-    // done with all fragments?
-    if (off >= CSV_LEN) { 
-      phase = PH_SEND_END; 
-      delay(SEND_GAP_MS); 
-      return;
-    }
-
-    uint8_t want = (uint8_t)min((size_t)CHUNK_SIZE, CSV_LEN - off);
-    uint8_t room = (maxp > hdr) ? (uint8_t)(maxp - hdr) : 0;
-
-    // if there is no payload room, then send an empty tick to drain the MAC,
-    // and try again next loop
-    if (room == 0) {
-      uint8_t dn[64]; 
-      size_t dnLen = sizeof(dn); 
-      uint8_t dnPort = 0;
-      (void)txrx(/*port*/0, /*payload*/nullptr, /*len*/0, dn, dnLen, dnPort);
-      processDownlink(dnPort, dn, dnLen);
-      delay(SEND_GAP_MS);
-      return;
-    }
-
-    // set "len" to be the minimum value of want and room
-    uint8_t len = (want <= room) ? want : room;
-
-    uint8_t up[6 + CHUNK_SIZE];
-    up[0] = MSG_FRAG;
-    put16le(&up[1], sessId);
-    put16le(&up[3], seq);
-    up[5] = len;
-    memcpy(&up[6], &CSV_BUF[off], len);
-
-    uint8_t dn[16]; 
-    size_t dnLen = sizeof(dn); 
-    uint8_t dnPort = 0;
-    int16_t got = txrx(PORT_DATA_UP, up, (size_t)(6 + len), dn, dnLen, dnPort);
-    processDownlink(dnPort, dn, dnLen);
-
-    delay(SEND_GAP_MS);
-    return;
-  }
-
-  // Send and process any downlink (which ACKs the previous step)
-  uint8_t dn[64]; 
-  size_t dnLen = sizeof(dn); 
-  uint8_t dnPort = 0;
-  (void)txrx(PORT_CTRL_UP, (upLen ? up : nullptr), upLen, dn, dnLen, dnPort);
-  processDownlink(dnPort, dn, dnLen);
-
-  // Advance state AFTER transmitting
-  if (phase == PH_SEND_START) {
-    phase = (totalFrags ? PH_SEND_FRAGS : PH_SEND_END);
-  }
-  else if (phase == PH_SEND_END) {
-    const size_t needHdr = 3;
-    logHeadroom("END", needHdr);
-    if (!ensureHeaderRoom(needHdr)) { 
-      delay(SEND_GAP_MS); 
-      return; 
-    }
-
-    uint8_t up[3];
-    up[0] = MSG_END;
-    put16le(&up[1], sessId);
-
-    uint8_t dn[8]; 
-    size_t dnLen = sizeof(dn); 
-    uint8_t dnPort = 0;
-    int16_t got = txrx(PORT_CTRL_UP, up, sizeof(up), dn, dnLen, dnPort);
-
-    // May set PH_DONE when RESULT arrives in the same RX window
-    processDownlink(dnPort, dn, dnLen);
-
-    if (got >= 0) {
-      // Only wait for RESULT if we didn't already get it
-      if (phase != PH_DONE) {
-        phase = PH_WAIT_RESULT;
-        resultTickCount = 0;
-        resultStartMs   = millis();
+      break;
+    case PH_SEND_FRAGS:
+      if (sendFrag() == 1) { // if r==0, we wait for ACK in subseq ticks, if -1 no room and we ticked
+        phase = PH_SEND_END;   // all fragments done
       }
-    } else {
-      Serial.print(F("END send failed: ")); Serial.println(got);
-    }
-
-    delay(SEND_GAP_MS);
-    return;
-  }
-  else if (phase == PH_WAIT_RESULT) {
-    // empty tick opens RX for RESULT
-    uint8_t dn[64]; 
-    size_t dnLen = sizeof(dn); 
-    uint8_t dnPort = 0;
-    (void)txrx(/*port*/0, /*payload*/nullptr, /*len*/0, dn, dnLen, dnPort);
-    processDownlink(dnPort, dn, dnLen);
-
-    // processDownlink() will set PH_DONE when RESULT arrives
-    if (phase == PH_DONE) { 
-      delay(200); 
-      return; 
-    }
-
-    // timeout → retry END once
-    resultTickCount++;
-    if (resultTickCount >= RESULT_MAX_TICKS || (millis() - resultStartMs) > RESULT_WAIT_MS) {
-      Serial.println(F("RESULT timeout — retrying END."));
-      phase = PH_SEND_END;
-    }
-    delay(SEND_GAP_MS);
-    return;
+      break;
+    case PH_SEND_END:
+      sendEnd(); // either becomes PH_WAIT_RESULT or PH_DONE
+      break;
+    case PH_WAIT_RESULT:
+      tickWaitResult();
+      break;
+    case PH_DONE:
+    default:
+      delay(1000);
+      break;
   }
   delay(SEND_GAP_MS);
 }
