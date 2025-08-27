@@ -1,0 +1,29 @@
+- test gateway and node communication 
+
+DOCUMENTATION:
+- organize for node, gateway, and datalogger
+- add hardware photos
+- rewrite as .md file
+- add gw_receiver3.py to /gateway/
+
+GATEWAY:
+- put together hardware
+- setup wireguard for remote access
+- setup systemd unit file for gw_receiver3.py
+- handle out-of-order and repeated packets from node
+- handle receiving multiple nodes at once, multithreading?
+- CRC error handling(?)
+- handle CSV-reconstitution better:
+	- name files based on device name rather than devEUI
+	- append instead of adding new file per-session
+
+NODE:
+- improve ADR bump-ups
+- make state machine clearer and more concise
+- CRC error handling(?)
+- temperature reading instead of random values
+- increase time between wake-ups
+
+DATALOGGER:
+- chunk data instead of row-by-row
+- 
