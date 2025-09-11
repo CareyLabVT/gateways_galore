@@ -163,9 +163,8 @@ You need the following three certificates:
         ping -I wlan0 8.8.8.8
         ```
 
-### Set up Wireguard VPN
-This section is necessary for remote maintenance.
-[repeat steps outlined in SPIN@VT notion page]
+### Remote access
+For remote maintenance, you have two primary options. You can configure both your personal machine and the Raspberry Pi on the SPIN Lab Wireguard VPN. If the Raspberry Pi is connected to the eduroam network, then you can [connect your personal machine to the Virginia Tech VPN](https://www.nis.vt.edu/ServicePortfolio/Network/RemoteAccess-VPN.html) and SSH into the Raspberry Pi from there. 
 
 ### Configure Raspberry Pi as gateway
 #### Basic Raspberry Pi settings
