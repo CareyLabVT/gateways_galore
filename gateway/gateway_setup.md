@@ -210,7 +210,7 @@ For remote maintenance, you have two primary options. You can configure both you
         sudo nano ./install.sh
         ```
     2. Under the following block of code, insert the line `INSTALL_CHIRPSTACK=0` and then CTRL+X to exit nano.
-        ```
+        ```bash
         while true; do
             case "${1}" in
                 --help)
