@@ -7,12 +7,12 @@ Under construction!
 ## FLARE Sensor Network
 The sensor networks currently used by the FLARE forecasting project are deployed at three freshwater drinking reservoirs located around Roanoke, VA. Two of the reservoirs, Beaverdam Reservoir and Carvins Cove, have a single gateway deployed on-site to achieve the goal of “edge-to-cloud transfers and remote management”. The Carvins Cove gateway is connected to grid power. The Beaverdam Reservoir gateway uses solar power. The network at the third reservoir, Falling Creek Reservoir, consists of three gateways. Two of the gateways are LTE-connected and run on grid power. The third gateway does not use an LTE-modem, but rather streams data over a LoRa-radio to one of the LTE-connected gateways, which forwards packets to the Internet. The LoRa-connected gateway uses solar power. 
 
-[diagram of current sensor network, including Annie (CCR) and Bjorn (BVR)]
+![Current Network](/images/current_network.png)
 
 #### Hardware
 Each gateway is a Compulab Fitlet 2 or 3. Fitlet computers are designed for industrial and field applications and are very capable machines. Each gateway is connected to a Campbell Scientific datalogger via an Ethernet link. The datalogger is responsible for collecting measurements from each sensor and compiling it into a tidy CSV file. There are a few different datalogger models deployed at our field-sites, such as the CR6 and the CR3000. 
 
-[image of gateway enclosure internals]
+![FCR Met Station Internals](/images/met_station_internals.jpg)
 [images of Fitlet and dataloggers]
 
 #### Software
@@ -21,9 +21,13 @@ Each datalogger runs a CRBasic program that collects data from attached sensors 
 [more information about node maintenance]
 
 ### Challenges
+
 #### Reliability
+
 #### Power Consumption
+
 #### Simplicity
+
 #### Scalability
 
 ## Proposed Solution
